@@ -2,8 +2,7 @@ import type { Express } from "express";
 import { createServer } from 'node:http';
 import type { Server } from 'node:http';
 import { storage } from "./storage";
-import { getGameProps, getGameMainLines, priceParlay, PROP_CATEGORIES } from "./opticodds";
-import scheduleData from "./schedule_full.json";
+import { getGameProps, getGameMainLines, priceParlay, PROP_CATEGORIES, getSchedule } from "./opticodds";
 import { randomUUID } from "node:crypto";
 
 export async function registerRoutes(
@@ -11,29 +10,32 @@ export async function registerRoutes(
   app: Express
 ): Promise<Server> {
   // ---- Schedule ----
-  app.get("/api/weeks", (_req, res) => {
-    const weeks = Array.from(new Set((scheduleData as any[]).map((g) => g.computed_week))).sort((a, b) => a - b);
+  app.get("/api/weeks", async (_req, res) => {
+    const scheduleData = await getSchedule();
+    const weeks = Array.from(new Set((scheduleData as any[]).map((g) => Number(g.season_week)))).sort((a, b) => a - b);
     res.json({ weeks });
   });
 
-  app.get("/api/current-week", (_req, res) => {
-    const games = [...(scheduleData as any[])].sort((a, b) => a.start_date.localeCompare(b.start_date));
+  app.get("/api/current-week", async (_req, res) => {
+    const scheduleData = (await getSchedule()) as any[];
+    const games = [...scheduleData].sort((a, b) => a.start_date.localeCompare(b.start_date));
     const now = Date.now();
     const upcoming = games.find((g) => new Date(g.start_date).getTime() >= now - 4 * 60 * 60 * 1000);
-    const week = upcoming ? upcoming.computed_week : games[games.length - 1]?.computed_week ?? 1;
+    const week = upcoming ? Number(upcoming.season_week) : Number(games[games.length - 1]?.season_week ?? 1);
     res.json({ week });
   });
 
-  app.get("/api/schedule", (req, res) => {
+  app.get("/api/schedule", async (req, res) => {
+    const scheduleData = (await getSchedule()) as any[];
     const week = req.query.week ? Number(req.query.week) : undefined;
-    let games = scheduleData as any[];
-    if (week != null) games = games.filter((g) => g.computed_week === week);
+    let games = scheduleData;
+    if (week != null) games = games.filter((g) => Number(g.season_week) === week);
     games = [...games].sort((a, b) => a.start_date.localeCompare(b.start_date));
     const shaped = games.map((g) => ({
       id: g.id,
       startDate: g.start_date,
       status: g.status,
-      week: g.computed_week,
+      week: Number(g.season_week),
       homeTeam: g.home_team_display,
       awayTeam: g.away_team_display,
       homeAbbr: g.home_competitors?.[0]?.abbreviation,
@@ -49,13 +51,13 @@ export async function registerRoutes(
     res.json({ games: shaped });
   });
 
-  app.get("/api/games/:id", (req, res) => {
-    const game = (scheduleData as any[]).find((g) => g.id === req.params.id);
+  app.get("/api/games/:id", async (req, res) => {
+    const game = ((await getSchedule()) as any[]).find((g) => g.id === req.params.id);
     if (!game) return res.status(404).json({ error: "not_found" });
     res.json({
       id: game.id,
       startDate: game.start_date,
-      week: game.computed_week,
+      week: Number(game.season_week),
       status: game.status,
       homeTeam: game.home_team_display,
       awayTeam: game.away_team_display,

@@ -125,6 +125,66 @@ export const PROP_CATEGORIES: Record<string, { id: string; name: string }[]> = {
 
 export const ALL_PROP_MARKET_IDS = Object.values(PROP_CATEGORIES).flat().map((m) => m.id);
 
+import scheduleFallback from "./schedule_full.json";
+
+// Live schedule with a static fallback: OpticOdds keeps team records and game
+// statuses current on /fixtures, so refresh the slate from there (1h TTL) and
+// fall back to the bundled snapshot if the connector is unavailable.
+export async function getSchedule(): Promise<any[]> {
+  return cached("schedule", 3600_000, async () => {
+    try {
+      const pages: any[] = [];
+      for (let page = 1; page <= 10; page++) {
+        const resp = await callConnector("/fixtures", {
+          sport: "football",
+          league: "nfl",
+          season_year: "2026",
+          page,
+        });
+        const result = resp.result ?? resp;
+        const data = result.data?.data ?? result.data ?? [];
+        if (!Array.isArray(data) || data.length === 0) break;
+        pages.push(...data);
+      }
+      const seen = new Map<string, any>();
+      for (const g of pages) seen.set(g.id, g);
+      let games = Array.from(seen.values()).filter((g: any) => g.season_type === "Regular Season");
+      if (games.length < 200) throw new Error("schedule fetch incomplete");
+      // OpticOdds leaves some late-season Saturday games at season_week 0; infer
+      // their week from nearby games so every slate tab stays populated.
+      const withTime = games
+        .map((g: any) => ({ g, t: new Date(g.start_date).getTime() }))
+        .sort((a, b) => a.t - b.t);
+      for (const { g } of withTime) {
+        if (Number(g.season_week) === 0) {
+          const gt = new Date(g.start_date).getTime();
+          const counts = new Map<number, number>();
+          for (const n of withTime) {
+            if (Math.abs(n.t - gt) <= 4 * 86400_000 && Number(n.g.season_week) > 0) {
+              const w = Number(n.g.season_week);
+              counts.set(w, (counts.get(w) ?? 0) + 1);
+            }
+          }
+          let best = 0;
+          let bestCount = 0;
+          for (const [w, c] of Array.from(counts.entries())) {
+            if (c > bestCount) {
+              best = w;
+              bestCount = c;
+            }
+          }
+          if (best > 0) g.season_week = String(best);
+        }
+      }
+      games = games.filter((g: any) => Number(g.season_week) > 0);
+      for (const g of games) g.computed_week = Number(g.season_week);
+      return games;
+    } catch {
+      return JSON.parse(JSON.stringify(scheduleFallback)) as any[];
+    }
+  });
+}
+
 const MAIN_MARKETS = [
   { id: "moneyline", name: "Moneyline" },
   { id: "point_spread", name: "Point Spread" },
